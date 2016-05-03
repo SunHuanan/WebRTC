@@ -12,7 +12,7 @@ app.use(bodyParser.json());
 
 
 app.use(express.static(path.join(__dirname, 'public')));
-server.listen(8080);
+server.listen(80);
 
 
 app.get('/', function(req, res) {
