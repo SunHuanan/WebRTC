@@ -1,0 +1,8 @@
+{
+    "name":"webrtc",
+    "version":"3.0.0",
+    "description":"with httpresquester do similation of server admin",
+    "dependencies":{
+        "express":"4.13.4"
+    }
+}

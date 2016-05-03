@@ -1,0 +1,502 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"
+"http://www.w3.org/TR/html4/strict.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en">
+
+	<head>
+		<link href="/css/bootstrap.css" rel="stylesheet" type="text/css">
+		<link href="/css/bootstrap.min.css" rel="stylesheet" type="text/css">
+		<!--<script type="text/javascript" src="/js/adapter.js"></script>-->
+		<script type="text/javascript" src="https://rawgit.com/webrtc/samples/gh-pages/src/js/adapter.js"></script>
+
+		<!--<script src="/socket.io/socket.io.js"></script>-->
+		<script src="/js/bootstrap.js"></script>
+		<script src="/js/jquery-2.1.4.min.js"></script>
+		<script src="/js/bootstrap.min.js"></script>
+		<script>
+			setInterval(timer, 5000);
+			var username;
+			var telephone;
+			var remoteNum;
+			var haveChat = false;
+			var pc;
+			var localStream;
+			//var adminAddress = "http://192.168.1.13:8080";
+			var serverAddress = "http://127.0.0.1:3000";
+			//controler l'action login
+			function usernameSubmit() {
+				telephone = document.getElementById("telephoneNo").value;
+				/*console.log('username: ' + username);*/
+				if (telephone != "") {
+					document.getElementById("loginbox").style.display = 'none';
+					document.getElementById("friendlist").style.display = 'block';
+					document.getElementById("videobox").style.display = 'none';
+					$.post(
+						serverAddress + "/adduser", {
+							"telephone": this.telephone
+						},
+						function(data) {
+							console.log(data.answer);
+						},
+						"json"
+					);
+				} else {
+					document.getElementById("information").style.display = 'block'
+					document.getElementById("information").innerText = "please fill in the telephone"
+				}
+			}
+			//une munuterie pour mettre a jour des donnees de serveur
+			function timer() {
+				//mise a jour la liste de client
+				$("#list").empty();
+				$.get(
+					serverAddress + "/userList",
+					//$(console.log("reussir a envoyer une demande userList")),
+					function(data) {
+						var onlineUsers = data.onlineUsers;
+						for (key in onlineUsers) {
+							//console.log(onlineUsers[key] + "      " + telephone);
+							if (onlineUsers.hasOwnProperty(key) && onlineUsers[key] != telephone) {
+								$("#list").append("<li class=\"list-group-item\" >" + onlineUsers[key] + "</li>");
+							}
+						}
+						console.log("userlist successfully received");
+					}
+				);
+				//mise a jour les info de videochat
+				$.get(
+					serverAddress + "/videochat/" + telephone,
+					//$(console.log("reussir a envoyer une demande userList")),
+					function(data) {
+						var rooms = data.rooms;
+						if (rooms != "nochat" && rooms != "inchat") {
+							haveChat = true;
+							if (data.owner == "caller") {
+								$("#notice").css('display', '');
+								$("#notice").html('creat room (' + data.roomNum + ') success, wait for ' + rooms.responder.telephone);
+								initCaller();
+							} else {
+								$("#notice").css('display', '');
+								//var u = (rooms.user1.telephone == telephone) ? rooms.user2.telephone : rooms.user1.telephone;
+								$("#notice").html('have a videochat with  ' + rooms.caller.telephone + '  at room ' + data.roomNum + ' <button type=\"button\" class=\"btn btn-warning\" onclick=\"initResponder(\'' + data.roomNum + '\');\"> ok </button>');
+							}
+						}
+					}
+				);
+			}
+			
+			
+			function initCaller() {
+				$("#videobox").css('display', '');
+				//stunserver
+				var iceServer = {
+					"iceServers": [{
+						"url": "stun:stun.l.google.com:19302"
+					}]
+				};
+				//si il n'y a pas de stunserver, mettre null.
+				pc = new RTCPeerConnection(null);
+				var sendOfferFn = function(desc) {
+					//console.log("desc: " + desc.toString());
+					pc.setLocalDescription(desc);
+					$.post(
+						serverAddress + "/callerAddSDP", {
+							"sdp": JSON.stringify(desc),
+							"caller": telephone
+						},
+						function(data) {
+							console.log(data.answer);
+						},
+						"json"
+					);
+				};
+				//obtenir le flux de donnees par camera
+				navigator.getUserMedia({
+					"audio": true,
+					"video": true
+				}, function(stream) {
+					localStream = stream;
+					document.getElementById('localVideo').srcObject = localStream;
+					changesize('local');
+					//ajouter le flux dans le RTCPeerConnection
+					pc.addStream(stream);
+					pc.createOffer(sendOfferFn, function(error) {
+						console.log('Failure callback: ' + error);
+					});
+				}, function(error) {
+					console.log('getUserMedia error: ' + error);
+				});
+				//chaque 5s demander au serveur pour recuperer la description des autre
+				var getsdp = setInterval(function() {
+					$.get(serverAddress + "/getotherSDP/" + telephone,
+						function(data) {
+							if (data.sdp != "") {
+								pc.setRemoteDescription(new RTCSessionDescription(JSON.parse(data.sdp)));
+								console.log("fait le setRemoteD");
+								clearInterval(getsdp);
+							}
+						}
+					);
+				}, 5000);
+				var count = 0;
+				var first = true;
+				//chaque 5s demander au serveur pour recuperer les info candidat des autre
+				var getCandidate = setInterval(function() {
+					$.get(serverAddress + "/getCandidate/" + telephone,
+						function(data) {
+							if (data.candidate != "") {
+								first = false;
+								for (key in data.candidate) {
+									console.log("" + JSON.parse(data.candidate[key]));
+									pc.addIceCandidate(new RTCIceCandidate(JSON.parse(data.candidate[key])));
+								}
+							} else {
+								count++;
+								console.log(first + "   " + count);
+								if (first == false && count > 2) {
+									count = 0;
+									clearInterval(getCandidate);
+								}
+							}
+						}
+					);
+				}, 5000);
+				//ecoute la RTCPeerConnection, si il y a un nouveau flux entre, le affiche dans la page
+				pc.onaddstream = function(event) {
+					document.getElementById('remoteVideo').srcObject = event.stream;
+					changesize('remote');
+				};
+				//ecoute la RTCPeerConnection, si il y a des infos de candiate, le telecharge au serveur
+				pc.onicecandidate = function(event) {
+					if (event.candidate !== null) {
+						console.log("=============have canididate")
+						$.post(
+							serverAddress + "/addCandidate", {
+								"candidate": JSON.stringify(event.candidate),
+								"caller": telephone
+							},
+							function(data) {
+								console.log(data.answer);
+							},
+							"json"
+						);
+					}
+				};
+				//ferme la RTCPeerConnection, detruire le flux 
+				var detectClose = setInterval(function() {
+					$.get(
+						serverAddress + "/videochat/" + telephone,
+						//$(console.log("reussir a envoyer une demande userList")),
+						function(data) {
+							var rooms = data.rooms;
+							if (rooms == "nochat") {
+								document.getElementById('localVideo').srcObject = "";
+								document.getElementById('remoteVideo').srcObject = "";
+								$("#videobox").css('display', 'none');
+								$("#notice").text("");
+								$("#notice").css('display', 'none');
+								pc = null;
+								//localStream.stop()
+								if (localStream != null) {
+									if (localStream.stop) {
+										localStream.stop();
+									}
+								}
+								//pour chrome apres version45;
+								if (localStream.getTracks() != null) {
+									localStream.getTracks().forEach(function(track) {
+										track.stop();
+									});
+								}
+								clearInterval(detectClose);
+							}
+						}
+					);
+				}, 5000);
+			}
+
+			function initResponder(roomNum) {
+				$("#videobox").css('display', '');
+				//stunserver
+				var iceServer = {
+					"iceServers": [{
+						"url": "stun:stun.l.google.com:19302"
+					}]
+				};
+				//si il n'y a pas de stunserver, mettre null.
+				pc = new RTCPeerConnection(null);
+				var sendAnswerFn = function(desc) {
+					//console.log("desc: " + desc.toString());
+					pc.setLocalDescription(desc);
+					$.post(
+						serverAddress + "/respondAddSDP", {
+							"sdp": JSON.stringify(desc),
+							"roomNum": roomNum
+						},
+						function(data) {
+							console.log(data.answer);
+						},
+						"json"
+					);
+				};
+				navigator.getUserMedia({
+					"audio": true,
+					"video": true
+				}, function(stream) {
+					localStream = stream;
+					document.getElementById('localVideo').srcObject = localStream;
+					changesize('local');
+					pc.addStream(stream);
+				}, function(error) {
+					console.log('getUserMedia error: ' + error);
+				});
+				var getsdp = setInterval(function() {
+					$.get(
+						serverAddress + "/getotherSDP/" + telephone,
+						function(data) {
+							if (data.sdp != "") {
+								pc.setRemoteDescription(new RTCSessionDescription(JSON.parse(data.sdp)));
+								console.log("fait le setRemoteD");
+								clearInterval(getsdp);
+							}
+						}
+					);
+				}, 5000);
+				setTimeout(function() {
+					pc.createAnswer(sendAnswerFn, function(error) {
+						console.log('Failure callback: ' + error);
+					});
+				}, 10000);
+				var count = 0;
+				var first = true;
+				var getCandidate = setInterval(function() {
+					$.get(serverAddress + "/getCandidate/" + telephone,
+						function(data) {
+							if (data.candidate != "") {
+								first = false;
+								for (key in data.candidate) {
+									console.log("" + JSON.parse(data.candidate[key]));
+									pc.addIceCandidate(new RTCIceCandidate(JSON.parse(data.candidate[key])));
+								}
+							} else {
+								count++;
+								console.log(first + "   " + count);
+								if (first == false && count > 2) {
+									count = 0;
+									clearInterval(getCandidate);
+								}
+							}
+						}
+					);
+				}, 5000);
+				pc.onaddstream = function(event) {
+					document.getElementById('remoteVideo').srcObject = event.stream;
+					changesize('remote');
+				};
+				pc.onicecandidate = function(event) {
+					if (event.candidate !== null) {
+						console.log("=============have canididate")
+						$.post(
+							serverAddress + "/addCandidate", {
+								"candidate": JSON.stringify(event.candidate),
+								"caller": telephone
+							},
+							function(data) {
+								console.log(data.answer);
+							},
+							"json"
+						);
+					}
+				};
+				var detectClose = setInterval(function() {
+					$.get(
+						serverAddress + "/videochat/" + telephone,
+						//$(console.log("reussir a envoyer une demande userList")),
+						function(data) {
+							var rooms = data.rooms;
+							if (rooms == "nochat") {
+								document.getElementById('localVideo').srcObject = "";
+								document.getElementById('remoteVideo').srcObject = "";
+								$("#videobox").css('display', 'none');
+								$("#notice").text("");
+								$("#notice").css('display', 'none');
+								//console.log(pc);
+								pc = null;
+								if (localStream != null) {
+									if (localStream.stop) {
+										localStream.stop();
+									}
+								}
+								if (localStream.getTracks() != null) {
+									localStream.getTracks().forEach(function(track) {
+										track.stop();
+									});
+								}
+								//localStream.stop()
+								clearInterval(detectClose);
+							}
+						}
+					);
+				}, 5000);
+			}
+			//changer les tailles des fenetre video
+			function changesize(type) {
+				if (type == "remote") {
+					$("#remoteVideo").css({
+						"width": "510",
+						"height": "380"
+					});
+					$("#localVideo").css({
+						"width": "200",
+						"height": "150"
+					});
+					$("#local").css({
+						"position": "absolute",
+						"index": "100",
+						"left": "15",
+						"bottom": "0"
+					});
+					$("#remote").removeAttr("style");
+				} else {
+					$("#localVideo").css({
+						"width": "510",
+						"height": "380"
+					});
+					$("#remoteVideo").css({
+						"width": "200",
+						"height": "150"
+					});
+					$("#remote").css({
+						"position": "absolute",
+						"index": "100",
+						"left": "15",
+						"bottom": "0"
+					});
+					$("#local").removeAttr("style");
+				}
+			}
+			//fermer la conversation
+			function closeChat() {
+				document.getElementById('localVideo').srcObject = "";
+				document.getElementById('remoteVideo').srcObject = "";
+				$("#videobox").css('display', 'none');
+				$("#notice").text("");
+				$("#notice").css('display', 'none');
+				pc = null;
+				//localStream.stop()
+				$.get(
+					serverAddress + "/closeRoom/" + telephone,
+					function(data) {
+						console.log("delete the room")
+					}
+				);
+				if (localStream != null) {
+					if (localStream.stop) {
+						localStream.stop();
+					}
+				}
+				if (localStream.getTracks() != null) {
+					localStream.getTracks().forEach(function(track) {
+						track.stop();
+					});
+				}
+				//console.log(localStream);
+			}
+		</script>
+		<embed src="" id="snd" width="0" height="0">
+	</head>
+
+	<body background="/image/bg.jpg" style="background-repeat:no-repeat;background-size: 100%;">
+
+		<nav class="navbar navbar-inverse" role="navigation">
+			<div class="navbar-header">
+				<a class="navbar-brand">Orange_webrtcdemo</a>
+			</div>
+
+		</nav>
+
+		<div id="notice" class="alert alert-warning col-md-5 col-xs-10 col-sm-10 col-xs-offset-1 col-sm-offset-1" style="display: none;">
+
+		</div>
+		<section>
+			<div id="loginbox" class="col-md-5 col-xs-10 col-sm-10 col-xs-offset-1 col-sm-offset-1">
+				<div class="row">
+					<div class="col-xs-3 col-sm-3 ">
+						<img src="/image/orange.png" />
+					</div>
+					<div class="col-xs-8 col-sm-8 ">
+						<h1 style="color: darkorange;">Welcome to webrtcDemo</h1>
+					</div>
+
+				</div>
+				<br />
+				<br />
+
+				<div>
+
+					<div class="alert alert-warning" style="display: none;" id="information"></div>
+					<form class="bs-example bs-example-form" role="form">
+
+						<div class="form-group">
+							<div class="input-group input-group-lg">
+								<span class="input-group-addon">&nbsp;&nbsp;</span>
+								<input type="text" class="form-control" placeholder="telephone" id="telephoneNo">
+							</div>
+						</div>
+						<div class="form-group">
+							<button type="button" style="width: 120;" class="btn btn-warning" onclick="usernameSubmit();"> login </button>
+
+						</div>
+						<!--<div class="form-group">
+							<div class="input-group input-group-lg">
+								<span class="input-group-addon">&nbsp;&nbsp;</span>
+								<input type="text" class="form-control" id="address" name="address" value="ws://192.168.1.13:3000">
+							</div>
+						</div>-->
+						<!--<div class="form-group">
+							<button type="button" style="width: 120;" class="btn btn-warning" onclick="demande();">test-demande</button>
+						</div>-->
+					</form>
+				</div>
+			</div>
+			<div id="friendlist" class="col-md-2 col-md-5 col-xs-10 col-sm-10 col-xs-offset-1 col-sm-offset-1" style="display: none;">
+
+				<div class="panel panel-warning">
+					<div class="panel-heading">
+						<h4 class="panel-title">
+            				<a data-toggle="collapse" data-parent="#accordion" href="#collapseFour">Friend List</a>
+         				</h4>
+					</div>
+					<div id="collapseFour" class="panel-collapse collapse in">
+						<div id="list" onmouseover="this.style.cursor='hand'" class="panel-body">
+
+						</div>
+					</div>
+				</div>
+
+				<!--<button type="button" class="btn btn-warning" id="hide" onclick="hidelist();">hidelist</button>
+				<button type="button" style="display: none;" class="btn btn-warning" id="unfold" onclick="unfoldlist();">unfoldlist</button>
+-->
+			</div>
+			<div id="videobox" class="col-md-10 col-xs-10 col-sm-10 col-xs-offset-1 col-sm-offset-1" style="display: none;background-color: #f0ad4e;border-radius:10px">
+				<!--Local:
+				<br>
+				<video id="localVideo" autoplay></video>
+				<br> Remote:
+				<br>
+				<video id="remoteVideo" autoplay></video>-->
+				<button type="button" class="btn btn-warning" style="border-radius:10px" onclick="closeChat();">x</button>
+				<br>
+				<div id="local">
+					<video onclick="changesize('local')" style="width: 510;height: 380;" id="localVideo" autoplay></video>
+				</div>
+
+				<div id="remote" style="position: absolute;z-index: 100;left:15 ;bottom:0 ;">
+					<video onclick="changesize('remote')" style="width: 200;height: 150;" id="remoteVideo" autoplay></video>
+				</div>
+			</div>
+		</section>
+
+	</body>
+
+</html>
